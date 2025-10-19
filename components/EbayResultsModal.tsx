@@ -27,7 +27,7 @@ export default function EbayResultsModal({
   const [items, setItems] = useState<EbayItem[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [excludeKeywords, setExcludeKeywords] = useState<string>('');
+  const [excludeList, setExcludeList] = useState<string[]>([]);
 
   // Search when modal opens or vehicle text changes
   useEffect(() => {
@@ -46,13 +46,7 @@ export default function EbayResultsModal({
     setError(null);
 
     try {
-      // Parse exclude keywords (comma or space separated)
-      const keywords: string[] = excludeKeywords
-        .split(/[,\s]+/)
-        .map((kw: string) => kw.trim())
-        .filter((kw: string) => kw.length > 0);
-
-      const results: EbayItem[] = await searchEbay(vehicleText, keywords, 20);
+      const results: EbayItem[] = await searchEbay(vehicleText, excludeList, 20);
       setItems(results);
 
       if (results.length === 0) {
@@ -64,6 +58,47 @@ export default function EbayResultsModal({
       console.error('eBay search error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Add word to exclusion list
+  const addToExcludeList = (word: string): void => {
+    if (!excludeList.includes(word)) {
+      setExcludeList([...excludeList, word]);
+    }
+  };
+
+  // Remove word from exclusion list
+  const removeFromExcludeList = (word: string): void => {
+    setExcludeList(excludeList.filter((w: string) => w !== word));
+  };
+
+  // Tokenize a title into clickable words
+  const tokenizeTitle = (title: string): Array<{ word: string; isExcluded: boolean }> => {
+    return title
+      .split(/\s+/)
+      .map((word: string) => {
+        // Clean the word but preserve original for display
+        const cleanWord = word.toLowerCase().replace(/[^\w\s]/g, '');
+        return {
+          word: word, // Original word with punctuation for display
+          isExcluded: excludeList.includes(cleanWord),
+        };
+      });
+  };
+
+  // Toggle word in exclusion list
+  const toggleWordExclusion = (word: string, event: any): void => {
+    // Prevent opening eBay link
+    event.stopPropagation();
+
+    const cleanWord = word.toLowerCase().replace(/[^\w\s]/g, '');
+    if (cleanWord.length <= 2) return; // Ignore very short words
+
+    if (excludeList.includes(cleanWord)) {
+      removeFromExcludeList(cleanWord);
+    } else {
+      addToExcludeList(cleanWord);
     }
   };
 
@@ -97,22 +132,30 @@ export default function EbayResultsModal({
           <Text style={styles.searchQuery}>{vehicleText}</Text>
         </View>
 
-        {/* Keyword exclusion */}
+        {/* Exclusion List */}
         <View style={styles.excludeSection}>
-          <Text style={styles.excludeLabel}>Exclude keywords (comma separated):</Text>
-          <View style={styles.excludeInputRow}>
-            <TextInput
-              style={styles.excludeInput}
-              value={excludeKeywords}
-              onChangeText={setExcludeKeywords}
-              placeholder="e.g., parts, salvage, damaged"
-              placeholderTextColor="#999"
-            />
-            <TouchableOpacity style={styles.searchButton} onPress={performSearch}>
-              <Text style={styles.searchButtonText}>Search</Text>
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.excludeLabel}>Excluded Words:</Text>
+          {excludeList.length > 0 ? (
+            <View style={styles.tagContainer}>
+              {excludeList.map((word: string) => (
+                <TouchableOpacity
+                  key={word}
+                  style={styles.excludedTag}
+                  onPress={(): void => removeFromExcludeList(word)}
+                >
+                  <Text style={styles.excludedTagText}>{word}</Text>
+                  <Text style={styles.excludedTagX}> ×</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity style={styles.searchButton} onPress={performSearch}>
+                <Text style={styles.searchButtonText}>Re-search</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.emptyText}>Click words below to exclude them</Text>
+          )}
         </View>
+
 
         {/* Loading state */}
         {loading && (
@@ -143,9 +186,27 @@ export default function EbayResultsModal({
                   <Image source={{ uri: item.image.imageUrl }} style={styles.itemImage} />
                 )}
                 <View style={styles.itemInfo}>
-                  <Text style={styles.itemTitle} numberOfLines={2}>
-                    {item.title}
-                  </Text>
+                  <View style={styles.titleContainer}>
+                    {tokenizeTitle(item.title).map((token: { word: string; isExcluded: boolean }, index: number) => (
+                      <TouchableOpacity
+                        key={index}
+                        onPress={(e): void => toggleWordExclusion(token.word, e)}
+                        style={[
+                          styles.wordChip,
+                          token.isExcluded && styles.wordChipExcluded,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.wordChipText,
+                            token.isExcluded && styles.wordChipTextExcluded,
+                          ]}
+                        >
+                          {token.word}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                   <Text style={styles.itemPrice}>{formatPrice(item.price)}</Text>
                   {item.condition && (
                     <Text style={styles.itemCondition}>Condition: {item.condition}</Text>
@@ -228,30 +289,45 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 8,
   },
-  excludeInputRow: {
+  tagContainer: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  excludedTag: {
+    flexDirection: 'row',
+    backgroundColor: '#ff4444',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     alignItems: 'center',
   },
-  excludeInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 4,
-    padding: 10,
-    fontSize: 14,
-    backgroundColor: '#fff',
+  excludedTagText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  excludedTagX: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 4,
+  },
+  emptyText: {
+    fontSize: 12,
+    color: '#999',
+    fontStyle: 'italic',
   },
   searchButton: {
-    marginLeft: 10,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
     backgroundColor: '#0064d2',
-    borderRadius: 4,
+    borderRadius: 16,
   },
   searchButtonText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 14,
+    fontSize: 12,
   },
   centerContent: {
     flex: 1,
@@ -295,6 +371,29 @@ const styles = StyleSheet.create({
   itemInfo: {
     flex: 1,
     marginLeft: 15,
+  },
+  titleContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 8,
+    gap: 4,
+  },
+  wordChip: {
+    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  wordChipExcluded: {
+    backgroundColor: '#ff4444',
+  },
+  wordChipText: {
+    fontSize: 13,
+    color: '#333',
+    fontWeight: '500',
+  },
+  wordChipTextExcluded: {
+    color: '#fff',
   },
   itemTitle: {
     fontSize: 14,

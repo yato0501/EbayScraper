@@ -1,4 +1,5 @@
 import axios, { AxiosResponse } from 'axios';
+import { encode as base64Encode } from 'base-64';
 import type { EbayConfig } from '../config/ebay.types';
 
 /**
@@ -84,9 +85,10 @@ const getAccessToken = async (): Promise<string> => {
   }
 
   try {
-    const credentials: string = Buffer.from(
+    // Use cross-platform base64 encoding (works in web, iOS, and Android)
+    const credentials: string = base64Encode(
       `${EBAY_CONFIG.CLIENT_ID}:${EBAY_CONFIG.CLIENT_SECRET}`
-    ).toString('base64');
+    );
 
     const response: AxiosResponse<{
       access_token: string;
@@ -120,12 +122,14 @@ const getAccessToken = async (): Promise<string> => {
  * @param query - Search query (e.g., "2015 CHEVROLET IMPALA")
  * @param excludeKeywords - Array of keywords to exclude from results
  * @param limit - Maximum number of results to return (default: 20)
+ * @param maxShippingCost - Maximum shipping cost in USD (default: 50)
  * @returns Array of eBay items
  */
 export const searchEbay = async (
   query: string,
   excludeKeywords: string[] = [],
-  limit: number = 20
+  limit: number = 20,
+  maxShippingCost: number = 50
 ): Promise<EbayItem[]> => {
   try {
     // Get access token
@@ -139,6 +143,18 @@ export const searchEbay = async (
       searchQuery = `${query} ${exclusions}`;
     }
 
+    console.log('Search query before request:', searchQuery);
+
+    // Build params object
+    // Note: eBay Browse API doesn't support dimension filtering directly
+    // We'll need to filter client-side after receiving results
+    const params: Record<string, string> = {
+      q: searchQuery,
+      limit: limit.toString(),
+      filter: 'buyingOptions:{FIXED_PRICE},price:[100],priceCurrency:USD,conditions:{USED}',
+      sort: '-price',
+    };
+
     // Make API request
     const response: AxiosResponse<EbaySearchResponse> = await axios.get(EBAY_BROWSE_URL, {
       headers: {
@@ -146,15 +162,36 @@ export const searchEbay = async (
         'Content-Type': 'application/json',
         'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US', // US marketplace
       },
-      params: {
-        q: searchQuery,
-        limit: limit.toString(),
-        sort: 'price', // Sort by price descending (highest first)
-        filter: 'buyingOptions:{FIXED_PRICE|AUCTION}', // Include both Buy It Now and auctions
-      },
+      params: params,
     });
 
-    return response.data.itemSummaries || [];
+    // Log the search results for debugging
+    console.log(`eBay search for "${searchQuery}": found ${response.data.total} total items, returning ${response.data.itemSummaries?.length || 0} items`);
+    if (response.data.warnings) {
+      console.warn('eBay API warnings:', response.data.warnings);
+    }
+
+    // Filter by shipping cost (client-side)
+    const allItems: EbayItem[] = response.data.itemSummaries || [];
+    const filteredItems: EbayItem[] = allItems.filter((item: EbayItem) => {
+      // If no shipping info, keep the item (might be free shipping or pickup only)
+      if (!item.shippingOptions || item.shippingOptions.length === 0) {
+        return true;
+      }
+
+      // Check if any shipping option is under the max cost
+      return item.shippingOptions.some((option) => {
+        if (!option.shippingCost) {
+          return true; // Free shipping or not specified
+        }
+        const shippingCost = parseFloat(option.shippingCost.value);
+        return shippingCost <= maxShippingCost;
+      });
+    });
+
+    console.log(`Filtered by shipping cost (max $${maxShippingCost}): ${filteredItems.length} items remaining`);
+
+    return filteredItems;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
       const errorMsg: string = error.response?.data?.errors?.[0]?.message || error.message;
