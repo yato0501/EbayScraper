@@ -42,3 +42,6 @@ config/ebay.config.ts
 # generated native folders
 /ios
 /android
+
+# Claude Code configuration
+.claude/
